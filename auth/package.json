@@ -1,14 +1,16 @@
 {
-  "name": "mcp-demo-client",
+  "name": "mcp-demo-auth",
   "version": "0.1.0",
   "type": "module",
   "private": true,
   "scripts": {
+    "dev": "node --watch src/index.js",
     "start": "node src/index.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "express": "^5.1.0",
-    "node-fetch": "^3.3.2",
-    "open": "^10.1.0"
+    "jose": "^5.9.3",
+    "morgan": "^1.10.1"
   }
-}   
+}
