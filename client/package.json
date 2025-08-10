@@ -1,0 +1,12 @@
+{
+  "name": "mcp-demo-client",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
