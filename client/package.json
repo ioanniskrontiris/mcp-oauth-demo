@@ -4,11 +4,14 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "demo": "node src/demoAgent.js"
   },
   "dependencies": {
     "express": "^5.1.0",
     "node-fetch": "^3.3.2",
-    "open": "^10.1.0"
+    "open": "^10.2.0"
   }
-}   
+
+  
+}

@@ -2,7 +2,7 @@ import express from "express";
 import morgan from "morgan";
 import cors from "cors";
 import crypto from "node:crypto";
-import { SignJWT } from "jose";
+import { SignJWT, jwtVerify } from "jose";
 
 const app = express();
 
@@ -13,7 +13,7 @@ app.use(express.urlencoded({ extended: false }));
 
 // === Config ===
 const ISSUER = "http://localhost:9092";
-const HMAC_SECRET = new TextEncoder().encode("dev-secret-please-change"); // shared with RS
+const HMAC_SECRET = new TextEncoder().encode("dev-secret-please-change"); // shared secret for HS256 (demo)
 
 // For now, single demo client; later, load from DB or config
 const CLIENTS = new Map([
@@ -21,11 +21,11 @@ const CLIENTS = new Map([
     "demo-client",
     {
       redirect_uris: [
-        "http://localhost:9200/callback", // AI Agent direct
-        "http://localhost:9300/callback"  // Gateway (future)
-      ]
-    }
-  ]
+        "http://localhost:9200/callback", // AI Agent (direct)
+        "http://localhost:9300/callback", // Gateway (future)
+      ],
+    },
+  ],
 ]);
 
 // authz request storage: code -> metadata
@@ -37,18 +37,19 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
     issuer: ISSUER,
     authorization_endpoint: `${ISSUER}/authorize`,
     token_endpoint: `${ISSUER}/token`,
+    introspection_endpoint: `${ISSUER}/introspect`,
     code_challenge_methods_supported: ["S256"],
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],
     token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: ["echo:read"],
+    scopes_supported: ["echo:read", "tickets:read"],
     redirect_uris_supported: Array.from(
-      new Set([...CLIENTS.values()].flatMap(c => c.redirect_uris))
-    )
+      new Set([...CLIENTS.values()].flatMap((c) => c.redirect_uris))
+    ),
   });
 });
 
-// === /authorize ===
+// === /authorize (Authorization Code + PKCE, auto-consent for demo) ===
 app.get("/authorize", (req, res) => {
   const {
     response_type,
@@ -57,7 +58,7 @@ app.get("/authorize", (req, res) => {
     scope = "echo:read",
     state,
     code_challenge,
-    code_challenge_method
+    code_challenge_method,
   } = req.query;
 
   if (response_type !== "code")
@@ -72,7 +73,7 @@ app.get("/authorize", (req, res) => {
   if (code_challenge_method !== "S256" || !code_challenge)
     return res.status(400).send("PKCE S256 required");
 
-  // Auto-approve consent for demo
+  // Auto-approve consent (demo)
   const code = crypto.randomBytes(24).toString("base64url");
   AUTHZ.set(code, {
     client_id,
@@ -80,7 +81,7 @@ app.get("/authorize", (req, res) => {
     scope,
     state,
     code_challenge,
-    code_challenge_method
+    code_challenge_method,
   });
 
   const url = new URL(redirect_uri);
@@ -89,15 +90,9 @@ app.get("/authorize", (req, res) => {
   return res.redirect(url.toString());
 });
 
-// === /token ===
+// === /token (Code -> Access Token JWT HS256) ===
 app.post("/token", async (req, res) => {
-  const {
-    grant_type,
-    code,
-    redirect_uri,
-    client_id,
-    code_verifier
-  } = req.body;
+  const { grant_type, code, redirect_uri, client_id, code_verifier } = req.body;
 
   if (grant_type !== "authorization_code") {
     return res.status(400).json({ error: "unsupported_grant_type" });
@@ -112,13 +107,12 @@ app.post("/token", async (req, res) => {
   if (entry.redirect_uri !== redirect_uri)
     return res.status(400).json({ error: "invalid_request" });
 
-  // Verify PKCE
+  // Verify PKCE (S256)
   const expected = crypto
     .createHash("sha256")
     .update(code_verifier)
     .digest()
     .toString("base64url");
-
   if (expected !== entry.code_challenge)
     return res
       .status(400)
@@ -129,7 +123,7 @@ app.post("/token", async (req, res) => {
   // Mint JWT
   const accessToken = await new SignJWT({
     scope: entry.scope,
-    aud: "mcp-demo"
+    aud: "mcp-demo", // the RS will check this
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
@@ -142,8 +136,58 @@ app.post("/token", async (req, res) => {
     access_token: accessToken,
     token_type: "Bearer",
     expires_in: 900,
-    scope: entry.scope
+    scope: entry.scope,
   });
+});
+
+// === /introspect (RFC 7662-style) ===
+// Accepts application/x-www-form-urlencoded with `token` (access token).
+// For demo we allow no client auth; you can tighten later (Basic auth, mTLS, JWT client assertion).
+// === /introspect (RFC 7662-ish, dev-friendly) ===
+app.post("/introspect", async (req, res) => {
+  try {
+    // 1) Try body "token=" (x-www-form-urlencoded)
+    let token = req.body?.token;
+
+    // 2) Or Authorization: Bearer <token>
+    if (!token) {
+      const auth = req.get("authorization") || req.get("Authorization");
+      if (auth && auth.toLowerCase().startsWith("bearer ")) {
+        token = auth.slice(7).trim();
+      }
+    }
+
+    if (!token) {
+      return res.status(400).json({
+        active: false,
+        error: "invalid_request",
+        error_description: "missing token",
+      });
+    }
+
+    // Verify HS256 JWT and extract claims
+    const { payload } = await jwtVerify(token, HMAC_SECRET, {
+      issuer: ISSUER,
+      // audience: "mcp-demo", // uncomment to enforce aud at the AS
+    });
+
+    return res.json({
+      active: true,
+      token_type: "access_token",
+      scope: payload.scope || "",
+      sub: payload.sub,
+      aud: payload.aud,
+      iss: payload.iss || ISSUER,
+      iat: payload.iat,
+      exp: payload.exp,
+    });
+  } catch (err) {
+    return res.json({
+      active: false,
+      error: err?.name || "invalid_token",
+      error_description: err?.message || "verification failed",
+    });
+  }
 });
 
 app.listen(9092, () => {
