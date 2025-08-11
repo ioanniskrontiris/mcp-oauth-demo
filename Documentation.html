@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Documentation.md</title>
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Markdown PDF CSS
+ */
+
+ body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+
+<script src="https://unpkg.com/mermaid/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast')
+          ? 'dark'
+          : 'default'
+    });
+  </script>
+<h1 id="mcp-oauth-demo--minimal-clientserverauth-flow">MCP OAuth Demo — Minimal Client/Server/Auth Flow</h1>
+<p>This project demonstrates a minimal Model Context Protocol (MCP)-style setup using OAuth 2.1 (Auth Code + PKCE):
+* An MCP Resource Server (tool server) that only responds to requests with a valid access token.
+* An Authorization Server that handles login &amp; consent and issues tokens.
+* A Client that discovers the auth server from a 401 WWW-Authenticate, performs the OAuth dance, stores the token, then calls the tool successfully.</p>
+<p>This is the foundation for adding an AI Agent (MCP client) and later a Gateway (TES) for fine-grained, policy-based auth and consent automation.</p>
+<h2 id="1-components">1) Components</h2>
+<h3 id="auth-auth">Auth (/auth)</h3>
+<p>OAuth 2.1 authorization server (local demo): serves authorization &amp; token endpoints, issues access tokens.</p>
+<h3 id="server-server">Server (/server)</h3>
+<p>MCP-style tool server (resource server). Exposes a protected GET /echo?text=.... Validates incoming Bearer tokens.</p>
+<h3 id="client-client">Client (/client)</h3>
+<p>A simple app that:</p>
+<ol>
+<li>calls GET /echo without a token</li>
+<li>reads the WWW-Authenticate hint</li>
+<li>performs Authorization Code + PKCE in the browser</li>
+<li>exchanges code → token</li>
+<li>retries the call with the token (success)</li>
+</ol>
+<h2 id="2-high-level-flow-at-a-glance">2) High-Level Flow (at a glance)</h2>
+<img src="http://www.plantuml.com/plantuml/svg/ZL9DJy904BttLxpqODf82nfFJLGg8HxGGAY4ercteso0NR8Tn6Zyx-uMQFYuU9pPj-zZPheL2ylhvI8Gaet5f28Rh5nBIRKIcj5RAD9yr0gVUoCKP3_98XeNSGXHOLmSO_8rpnfGlWFbHU05aDpjU96Xy0OGafmPp6YnC66mUtEeSU4GZ_qNjFtxFTCNtzOWHDg0pPnq73XGSiXuqxd2H0jdm5ZrJIKkCPrE4-_80PGKJ8WiLMPj9M59B4h10ZEbEJxGpXljTECaaxas6zqsdZVPamjMHYTL7JF8JtoukY6F6ZkjhUqMY6Lwg5TF9iDmHHflrcnyoGRjvYUYqQ3NZviHrWQVp8VIk80qklABEZKnfb9PaeoDSWkHfgJJYADXuJBMfX1vW9kN5uBBfDuLsVYCz0T2IgggrrsKD4tn-x-rvOUJo_10mheqZk1yZzUT3eO39-P9CeJRwzYhTKcNxcx_0000" alt="uml diagram">
+<h2 id="3-detailed-requestresponse-flow">3) Detailed Request/Response Flow</h2>
+<h3 id="31-first-call-no-token">3.1 First Call (No Token)</h3>
+<img src="http://www.plantuml.com/plantuml/svg/LO_1IWCn48Rl-nH3JXLCOi7JmcfjAPuAqbNsKf0XEx2XsIHCPctnwOse1q_3F__7VCoc2B8iSsXodTxvZ55W5pn5-RTIXzqBzCGVnB0wzZSAiC2nRtvGq0yrG0lF-rUmvARqA7ILRg8GKbCRNO5Vj8NxkpMyHLnaIkm_QJp5OHZqKysrzmw5MjWISbKnOPWxPOnHjwV8LDB2Zjvd4XnHi5EJI2wjjLmCNN7EWQovLAi-ntI9DdrRTEOav8H6_NT1DHkAO_tx2m00" alt="uml diagram">
+<p>What happens
+* The Resource Server refuses the request and points the client to its metadata (or directly to the authorization server) via WWW-Authenticate.</p>
+<h3 id="32-discovery--oauth-authorization">3.2 Discovery + OAuth Authorization</h3>
+<img src="http://www.plantuml.com/plantuml/svg/RP11IyGm48Nl_HMF76GNJ5VqLb2tYFW3wht4T727ZKb9fnOK_xlJrZsiUfcGb_U-F6O_YCioleMYrvCzzouA7W9Jb3F9rACSq51-funDtMmDt82wALOlx9rUKE7fyHcxSg8Gx36cAUwIqw2THyhyuOHJjCE2AJHWDVT3gF09S-PhANPzuYYcWYdBqbp2I3hIVmywyLNyRhDvoMdItxPhhnETxltYQxcxrU25Jnsr_k12eFXAYvIfuqnUsZ7pBFmfUtDrZPC9ah0ICR6kQUOjeRqMrUL-0m00" alt="uml diagram">
+<p>What happens
+* Client fetches AS metadata so it knows where to send the user.
+* Opens the browser to the authorization endpoint (with PKCE).
+* After login/consent, the AS redirects back with a code.</p>
+<h3 id="33-token-exchange--protected-call">3.3 Token Exchange + Protected Call</h3>
+<img src="http://www.plantuml.com/plantuml/svg/NP11IyD048Nl-HMFFRMqJOl7O6jZ4GyYBOb78IoRaInDTyDc8bNnlpj9gxIU1fRtllbcrothmDsXZXgPrjX6EyQcjkJuwacb7LV8ARnJm2ZDnmgwHPfVXvutkxzCTivaUHITW9Yjf844kst-WZdxFJcCZ2y94_IZaA9zizAU851f0nakkc37aTHcqZvp4dn16qDjMmoGAOPHy4T3ItLFEb1GKz2n4KHRM0d4SOplIv6i5tby40yobRzZElAoehhshwu_rGVxgTbwb-34m-tbnbMK_JEwMIomVH8nlq_0eIFPB-04Qg2gNuKrkLB--mS0" alt="uml diagram">
+<p>What happens</p>
+<ul>
+<li>Client exchanges code → token using the PKCE code_verifier.</li>
+<li>Client retries the tool call with Authorization: Bearer … and succeeds.</li>
+</ul>
+<h2 id="4-token-validation-server-side">4) Token Validation (server-side)</h2>
+<p>On each protected request, the MCP server:
+1.	Extracts Authorization: Bearer <token>.
+2.	Validates the JWT (signing key / issuer / audience / expiry).
+3.	(Optional) Introspects the token at the AS.
+4.	Enforces any required scopes/claims.
+5.	Proceeds with the tool action (e.g., echo) if valid; otherwise returns 401/403.</p>
+<h2 id="5-local-development">5) Local Development</h2>
+<p>From the repo root:</p>
+<h3 id="auth-server">Auth server</h3>
+<p>cd auth
+npm i
+npm run dev</p>
+<p>Runs on e.g. http://localhost:9000.</p>
+<h3 id="mcp-server-resource">MCP server (resource)</h3>
+<p>cd server
+npm i
+npm run dev</p>
+<p>Runs on e.g. http://localhost:9090.</p>
+<h3 id="client">Client</h3>
+<p>cd client
+npm i
+npm run dev</p>
+<p>This client will:
+* call the MCP server,
+* open your browser for login/consent,
+* exchange the code for a token,
+* retry the protected call.</p>
+<p>If you prefer, add a root script (optional):</p>
+<p>npm i -D concurrently
+npm run dev</p>
+<p>to boot services together.</p>
+<h2 id="6-what-this-demo-proves">6) What This Demo Proves</h2>
+<pre><code>* OAuth 2.1 auth-code + PKCE end-to-end, including metadata discovery.
+* Protected resource semantics for an MCP-style tool server.
+* A working client that learns where to authenticate from the server (not hardcoded).
+</code></pre>
+<h2 id="7-whats-next-roadmap">7) What’s Next (Roadmap)</h2>
+<pre><code>1.	Swap the simple client for an AI Agent (as the MCP client)
+•	Use Python (e.g., LangGraph or a minimal ADK-style loop) to call the MCP server.
+•	Keep the same OAuth flow: the agent “client” gets the 401, performs the code flow (headless or with a small local redirect handler), stores the token, and calls again.
+2.	Introduce the Gateway (TES) for fine-grained authorization
+•	Intercept the agent’s MCP requests.
+•	Enforce per-tool / per-action policies (context-aware).
+•	Automate consent where policy allows; otherwise prompt.
+•	Optionally mint short-lived assertion tokens for hop-by-hop isolation.
+3.	Dynamic Client Registration (RFC 7591)
+•	Register clients on the fly against the AS.
+•	Supports multi-server ecosystems without manual client provisioning.
+4.	Token Refresh + Rotation
+•	Add refresh token flows, short lifetimes, and key rotation to harden the demo.
+5.	Audit &amp; Logs
+•	Emit structured logs from client/server/auth for traceability.
+</code></pre>
+<h2 id="8-troubleshooting">8) Troubleshooting</h2>
+<pre><code>•	ERR_MODULE_NOT_FOUND jose
+</code></pre>
+<p>Run npm i jose in the folder that uses it (auth/server).
+•	Imports vs module type
+If you see “ECMAScript imports in CommonJS” errors, ensure:
+•	package.json has &quot;type&quot;: &quot;module&quot; (or set TS module: nodenext)
+•	Your ts-node / tsconfig matches (e.g., moduleResolution: nodenext).
+•	Port conflicts
+Change the default ports in .env or server configs if something else is running.</p>
+
+</body>
+</html>

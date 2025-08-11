@@ -5,22 +5,33 @@ import crypto from "node:crypto";
 import { SignJWT } from "jose";
 
 const app = express();
+
 app.use(cors());
 app.use(morgan("dev"));
-app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
+// === Config ===
 const ISSUER = "http://localhost:9092";
 const HMAC_SECRET = new TextEncoder().encode("dev-secret-please-change"); // shared with RS
+
+// For now, single demo client; later, load from DB or config
 const CLIENTS = new Map([
-  // client_id -> { redirect_uris: [...] }
-  ["demo-client", { redirect_uris: ["http://localhost:9200/callback"] }],
+  [
+    "demo-client",
+    {
+      redirect_uris: [
+        "http://localhost:9200/callback", // AI Agent direct
+        "http://localhost:9300/callback"  // Gateway (future)
+      ]
+    }
+  ]
 ]);
 
-// authz request storage: code -> { client_id, redirect_uri, scope, code_challenge, code_challenge_method, state }
+// authz request storage: code -> metadata
 const AUTHZ = new Map();
 
-/** RFC 8414 metadata */
+// === OAuth Metadata (RFC 8414) ===
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
   res.json({
     issuer: ISSUER,
@@ -30,11 +41,14 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],
     token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: ["echo:read"]
+    scopes_supported: ["echo:read"],
+    redirect_uris_supported: Array.from(
+      new Set([...CLIENTS.values()].flatMap(c => c.redirect_uris))
+    )
   });
 });
 
-/** /authorize - auto-consent + PKCE support */
+// === /authorize ===
 app.get("/authorize", (req, res) => {
   const {
     response_type,
@@ -46,15 +60,28 @@ app.get("/authorize", (req, res) => {
     code_challenge_method
   } = req.query;
 
-  if (response_type !== "code") return res.status(400).send("unsupported response_type");
+  if (response_type !== "code")
+    return res.status(400).send("unsupported response_type");
+
   const client = CLIENTS.get(client_id);
   if (!client) return res.status(400).send("unknown client_id");
-  if (!client.redirect_uris.includes(redirect_uri)) return res.status(400).send("invalid redirect_uri");
-  if (code_challenge_method !== "S256" || !code_challenge) return res.status(400).send("PKCE S256 required");
 
-  // auto-approve consent (demo)
+  if (!client.redirect_uris.includes(redirect_uri))
+    return res.status(400).send("invalid redirect_uri");
+
+  if (code_challenge_method !== "S256" || !code_challenge)
+    return res.status(400).send("PKCE S256 required");
+
+  // Auto-approve consent for demo
   const code = crypto.randomBytes(24).toString("base64url");
-  AUTHZ.set(code, { client_id, redirect_uri, scope, state, code_challenge, code_challenge_method });
+  AUTHZ.set(code, {
+    client_id,
+    redirect_uri,
+    scope,
+    state,
+    code_challenge,
+    code_challenge_method
+  });
 
   const url = new URL(redirect_uri);
   url.searchParams.set("code", code);
@@ -62,7 +89,7 @@ app.get("/authorize", (req, res) => {
   return res.redirect(url.toString());
 });
 
-/** /token - code -> access_token (JWT HS256) */
+// === /token ===
 app.post("/token", async (req, res) => {
   const {
     grant_type,
@@ -75,31 +102,38 @@ app.post("/token", async (req, res) => {
   if (grant_type !== "authorization_code") {
     return res.status(400).json({ error: "unsupported_grant_type" });
   }
+
   const entry = AUTHZ.get(code);
   if (!entry) return res.status(400).json({ error: "invalid_grant" });
 
-  // basic checks
-  if (entry.client_id !== client_id) return res.status(400).json({ error: "invalid_client" });
-  if (entry.redirect_uri !== redirect_uri) return res.status(400).json({ error: "invalid_request" });
+  if (entry.client_id !== client_id)
+    return res.status(400).json({ error: "invalid_client" });
 
-  // verify PKCE S256
+  if (entry.redirect_uri !== redirect_uri)
+    return res.status(400).json({ error: "invalid_request" });
+
+  // Verify PKCE
   const expected = crypto
     .createHash("sha256")
     .update(code_verifier)
     .digest()
     .toString("base64url");
-  if (expected !== entry.code_challenge) return res.status(400).json({ error: "invalid_grant", error_description: "bad pkce" });
+
+  if (expected !== entry.code_challenge)
+    return res
+      .status(400)
+      .json({ error: "invalid_grant", error_description: "bad pkce" });
 
   AUTHZ.delete(code);
 
-  // mint JWT
+  // Mint JWT
   const accessToken = await new SignJWT({
     scope: entry.scope,
-    aud: "mcp-demo",           // audience the RS will check
+    aud: "mcp-demo"
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
-    .setSubject("user-123")    // demo subject
+    .setSubject("user-123")
     .setIssuedAt()
     .setExpirationTime("15m")
     .sign(HMAC_SECRET);
