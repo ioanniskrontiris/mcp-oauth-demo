@@ -10,7 +10,7 @@ const CLIENT_ID = "demo-client";
 const REDIRECT_URI = "http://localhost:9200/callback";
 
 // Request both scopes so we can demo multiple endpoints later
-const SCOPE = "tickets:read echo:read";
+const SCOPE = "tickets:read";
 
 function base64url(input) {
   return Buffer.from(input)
@@ -116,10 +116,34 @@ async function callTickets(accessToken) {
   }
 }
 
+async function callEcho(accessToken, msg = "hello from the agent") {
+  const r = await fetch(`${RS}/echo`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ msg })
+  });
+
+  if (r.status === 403) {
+    console.error("❌ insufficient_scope: echo:read required");
+    console.error(await r.text());
+    return;
+  }
+  if (!r.ok) {
+    console.error("❌ Echo call failed:", r.status, await r.text());
+    return;
+  }
+  const data = await r.json();
+  console.log("\n🔊 Echo:", data);
+}
+
 (async () => {
   try {
     const token = await oauthFlow();
-    await callTickets(token);
+    await callTickets(token);     // needs tickets:read
+    await callEcho(token);        // needs echo:read
     console.log("\n✅ Demo complete.");
   } catch (e) {
     console.error(e);
