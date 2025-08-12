@@ -32,6 +32,7 @@ const CLIENTS = new Map([
       redirect_uris: [
         "http://localhost:9200/callback", // AI Agent (direct)
         "http://localhost:9300/callback", // Gateway (future)
+        "http://localhost:9400/oauth/callback", // Gateway Phase 1
       ],
     },
   ],
