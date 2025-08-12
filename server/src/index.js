@@ -1,4 +1,8 @@
 // server/src/index.js
+import { loadEnv, cfg } from "../shared/config.js";
+loadEnv();
+console.log("[MCP server] mode =>", cfg());
+
 import express from "express";
 import morgan from "morgan";
 import cors from "cors";

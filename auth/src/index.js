@@ -1,3 +1,7 @@
+import { loadEnv, cfg } from "../shared/config.js";
+loadEnv();
+console.log("[OAuth server] mode =>", cfg());
+
 import express from "express";
 import morgan from "morgan";
 import cors from "cors";

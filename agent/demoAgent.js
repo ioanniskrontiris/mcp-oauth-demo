@@ -1,4 +1,8 @@
 // client/src/demoAgent.js
+import { loadEnv, cfg } from "../shared/config.js";  // adjust path if needed
+loadEnv();
+console.log("[client] mode =>", cfg());
+
 import express from "express";
 import crypto from "node:crypto";
 import open from "open";
