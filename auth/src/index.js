@@ -1,3 +1,11 @@
+/*
+	•	exposes RFC 8414 metadata (and now also advertises a registration_endpoint);
+	•	supports Dynamic Client Registration (RFC 7591) at /register (simple, dev-friendly, no auth);
+	•	accepts a resource indicator (RFC 8707 style) on /authorize and /token, and mints the aud claim from it (falls back to mcp-demo if omitted);
+	•	implements Authorization Code + PKCE flow and introspection.
+*/
+
+
 import express from "express";
 import morgan from "morgan";
 import cors from "cors";
@@ -13,9 +21,10 @@ app.use(express.urlencoded({ extended: false }));
 
 // === Config ===
 const ISSUER = "http://localhost:9092";
-const HMAC_SECRET = new TextEncoder().encode("dev-secret-please-change"); // shared secret for HS256 (demo)
+const HMAC_SECRET = new TextEncoder().encode("dev-secret-please-change"); // HS256 (demo)
+const DEFAULT_AUDIENCE = "mcp-demo"; // RS identifier used if no resource indicator was provided
 
-// For now, single demo client; later, load from DB or config
+// In‑memory demo client registry (client_id -> { redirect_uris: [...] })
 const CLIENTS = new Map([
   [
     "demo-client",
@@ -28,24 +37,59 @@ const CLIENTS = new Map([
   ],
 ]);
 
-// authz request storage: code -> metadata
+// Authorization request storage: code -> metadata
 const AUTHZ = new Map();
 
-// === OAuth Metadata (RFC 8414) ===
+// Utility: tiny helper to normalize "resource" from query/body.
+// RFC 8707 allows multiple; for the demo we accept one string and ignore extras.
+function pickResource(input) {
+  if (!input) return undefined;
+  if (Array.isArray(input)) return input[0];
+  return String(input);
+}
+
+// === Authorization Server Metadata (RFC 8414) ===
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
   res.json({
     issuer: ISSUER,
     authorization_endpoint: `${ISSUER}/authorize`,
     token_endpoint: `${ISSUER}/token`,
     introspection_endpoint: `${ISSUER}/introspect`,
-    code_challenge_methods_supported: ["S256"],
+    registration_endpoint: `${ISSUER}/register`, // advertise DCR
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],
+    code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: ["echo:read", "tickets:read"],
+    // not standard, but handy to document where callbacks should be (demo)
     redirect_uris_supported: Array.from(
       new Set([...CLIENTS.values()].flatMap((c) => c.redirect_uris))
     ),
+  });
+});
+
+// === Dynamic Client Registration (RFC 7591, dev-friendly) ===
+// Accepts JSON: { redirect_uris: [ "...", ... ], client_name?, token_endpoint_auth_method? }
+// For demo we do no AS-side auth and issue "public" clients (no client_secret).
+app.post("/register", (req, res) => {
+  const { redirect_uris, client_name } = req.body || {};
+  if (!Array.isArray(redirect_uris) || redirect_uris.length === 0) {
+    return res.status(400).json({
+      error: "invalid_client_metadata",
+      error_description: "redirect_uris (array) is required",
+    });
+  }
+
+  const client_id = `client-${crypto.randomBytes(8).toString("hex")}`;
+  CLIENTS.set(client_id, { redirect_uris });
+
+  // Minimal RFC 7591 response (public client; no secret)
+  // client_id_issued_at and registration_client_uri omitted for simplicity
+  return res.status(201).json({
+    client_id,
+    client_name: client_name || client_id,
+    redirect_uris,
+    token_endpoint_auth_method: "none",
   });
 });
 
@@ -60,6 +104,9 @@ app.get("/authorize", (req, res) => {
     code_challenge,
     code_challenge_method,
   } = req.query;
+
+  // RFC 8707 resource indicator (optional)
+  const resource = pickResource(req.query.resource);
 
   if (response_type !== "code")
     return res.status(400).send("unsupported response_type");
@@ -82,6 +129,7 @@ app.get("/authorize", (req, res) => {
     state,
     code_challenge,
     code_challenge_method,
+    resource, // stash audience hint from the authorization request
   });
 
   const url = new URL(redirect_uri);
@@ -94,9 +142,12 @@ app.get("/authorize", (req, res) => {
 app.post("/token", async (req, res) => {
   const { grant_type, code, redirect_uri, client_id, code_verifier } = req.body;
 
+  // RFC 8707 resource indicator (optional, can override/confirm)
+  const resourceFromTokenReq = pickResource(req.body.resource);
+
   if (grant_type !== "authorization_code") {
     return res.status(400).json({ error: "unsupported_grant_type" });
-  }
+    }
 
   const entry = AUTHZ.get(code);
   if (!entry) return res.status(400).json({ error: "invalid_grant" });
@@ -110,7 +161,7 @@ app.post("/token", async (req, res) => {
   // Verify PKCE (S256)
   const expected = crypto
     .createHash("sha256")
-    .update(code_verifier)
+    .update(code_verifier || "")
     .digest()
     .toString("base64url");
   if (expected !== entry.code_challenge)
@@ -120,10 +171,16 @@ app.post("/token", async (req, res) => {
 
   AUTHZ.delete(code);
 
+  // Decide audience:
+  // 1) prefer resource from token request (explicit), else
+  // 2) resource from authorization request (if any), else
+  // 3) default audience for the RS.
+  const aud = resourceFromTokenReq || entry.resource || DEFAULT_AUDIENCE;
+
   // Mint JWT
   const accessToken = await new SignJWT({
     scope: entry.scope,
-    aud: "mcp-demo", // the RS will check this
+    aud, // RS will check this
   })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuer(ISSUER)
@@ -140,13 +197,10 @@ app.post("/token", async (req, res) => {
   });
 });
 
-// === /introspect (RFC 7662-style) ===
-// Accepts application/x-www-form-urlencoded with `token` (access token).
-// For demo we allow no client auth; you can tighten later (Basic auth, mTLS, JWT client assertion).
 // === /introspect (RFC 7662-ish, dev-friendly) ===
 app.post("/introspect", async (req, res) => {
   try {
-    // 1) Try body "token=" (x-www-form-urlencoded)
+    // 1) Try body "token=" (x-www-form-urlencoded or JSON)
     let token = req.body?.token;
 
     // 2) Or Authorization: Bearer <token>
@@ -168,7 +222,8 @@ app.post("/introspect", async (req, res) => {
     // Verify HS256 JWT and extract claims
     const { payload } = await jwtVerify(token, HMAC_SECRET, {
       issuer: ISSUER,
-      // audience: "mcp-demo", // uncomment to enforce aud at the AS
+      // You may enforce audience at the AS as well:
+      // audience: DEFAULT_AUDIENCE,
     });
 
     return res.json({
