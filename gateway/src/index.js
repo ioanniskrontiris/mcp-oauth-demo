@@ -405,6 +405,89 @@ app.get("/mcp/echo", async (req, res) => {
 
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
+// ---- Debug helpers (DEV ONLY) ------------------------------------
+
+// pick any ready session (we already have getReadySession)
+function b64urlToJson(b64url) {
+  try {
+    const json = Buffer.from(b64url, "base64url").toString("utf8");
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+// Show the access token the gateway currently holds (and its decoded header/payload)
+app.get("/debug/token", (_req, res) => {
+  const sess = getReadySession();
+  if (!sess || !sess.access_token) {
+    return res.status(404).json({ error: "no_session_or_token" });
+  }
+  const [hdr, pl, sig] = String(sess.access_token).split(".");
+  const header  = b64urlToJson(hdr);
+  const payload = b64urlToJson(pl);
+  return res.json({
+    token: sess.access_token,
+    header,
+    payload,
+    has_signature: Boolean(sig)
+  });
+});
+
+// Ask the AS to introspect the token the gateway holds
+app.get("/debug/introspect", async (_req, res) => {
+  const sess = getReadySession();
+  if (!sess || !sess.access_token) {
+    return res.status(404).json({ error: "no_session_or_token" });
+  }
+  try {
+    const r = await fetch(sess.as.introspection_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: sess.access_token })
+    });
+    const as_json = await r.json().catch(async () => ({ raw: await r.text() }));
+    return res.json({ ok: r.ok, status: r.status, as_introspection: as_json });
+  } catch (e) {
+    return res.status(502).json({ error: "introspection_error", detail: String(e?.message || e) });
+  }
+});
+
+// Clear in-memory sessions (force a fresh OAuth run on next call)
+app.post("/debug/session/reset", (_req, res) => {
+  SESSION.clear();
+  res.json({ ok: true, cleared: true });
+});
+
+// gateway/src/index.js (add after /mcp/echo)
+app.get("/mcp/tickets", async (req, res) => {
+  const sess = getReadySession();
+  if (!sess) return res.status(401).json({ error: "login_required" });
+
+  try {
+    const url = new URL("/tickets", sess.upstream);
+    const r = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${sess.access_token}` }
+    });
+
+    if (r.status === 401 || r.status === 403) {
+      sess.ready = false;
+      sess.access_token = undefined;
+      return res.status(401).json({ error: "login_required" });
+    }
+
+    const text = await r.text();
+    try {
+      return res.status(r.status).json(JSON.parse(text));
+    } catch {
+      res.status(r.status).type(r.headers.get("content-type") || "text/plain").send(text);
+    }
+  } catch (e) {
+    console.error("proxy /mcp/tickets error", e);
+    res.status(502).json({ error: "bad_gateway" });
+  }
+});
+
 const PORT = process.env.PORT || 9400;
 app.listen(PORT, () => {
   console.log(`Gateway listening on :${PORT}`);

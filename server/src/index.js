@@ -1,23 +1,4 @@
 // server/src/index.js
-
-/*
-	•	Serves Protected Resource Metadata at /.well-known/oauth-protected-resource with an authorization_servers array pointing to your AS metadata URL.
-	•	Emits a WWW-Authenticate header on 401 that includes a resource_metadata parameter (so MCP clients can discover metadata after an unauthenticated call).
-	•	Keeps your introspection flow and scope checks.
-	•	Uses the EXPECTED_AUD as the RS identifier and advertises it in the metadata so clients can pass it as the OAuth resource indicator (which your AS already respects by minting aud).
-*/
-
-/*
-1.	401 with WWW-Authenticate
-Any unauthenticated call returns WWW-Authenticate: Bearer ... resource_metadata="http://localhost:9091/.well-known/oauth-protected-resource". Your MCP client can read that header, fetch the PRM, then learn the authorization server(s) to contact.
-2.	Protected Resource Metadata (RFC 9728)
-The RS publishes:
-	•	authorization_servers: [ "http://localhost:9092/.well-known/oauth-authorization-server" ]
-	•	resource: "mcp-demo" (the identifier clients pass as OAuth resource, which your AS now uses to set aud)
-3.	End‑to‑end audience binding
-Client learns resource → sends resource in /authorize and /token → AS mints aud → RS enforces aud === EXPECTED_AUD.
-*/
-
 import express from "express";
 import morgan from "morgan";
 import cors from "cors";
@@ -41,14 +22,11 @@ const EXPECTED_AUD = process.env.EXPECTED_AUD || "mcp-demo"; // RS identifier (a
 
 /**
  * Protected Resource Metadata (RFC 9728)
- * This tells clients which authorization server(s) protect this resource
- * and what identifier ("resource") to use as an audience.
  */
 app.get("/.well-known/oauth-protected-resource", (_req, res) => {
   res.json({
     resource: EXPECTED_AUD,
     authorization_servers: [AS_METADATA_URL],
-    // Nice-to-have hints (non-normative but useful for clients/UI)
     scopes_supported: ["echo:read", "tickets:read"],
     introspection_endpoint: INTROSPECT_URL,
   });
@@ -56,8 +34,6 @@ app.get("/.well-known/oauth-protected-resource", (_req, res) => {
 
 /**
  * Helper: attach a standards-friendly 401 with WWW-Authenticate
- * We include resource_metadata so MCP clients can discover the PRM URL
- * immediately after an unauthenticated request.
  */
 function unauthorized(res, details) {
   const prm = new URL(
@@ -65,7 +41,6 @@ function unauthorized(res, details) {
     `http://localhost:${process.env.PORT || 9091}`
   ).toString();
 
-  // Example per our MCP doc: clients parse resource_metadata from header.
   const header = [
     `Bearer realm="${EXPECTED_AUD}"`,
     `error="invalid_token"`,
@@ -97,10 +72,9 @@ function hasScope(introspection, needed) {
 }
 
 /**
- * Middleware factory: introspect token and attach req.auth.
- * If `requiredScope` is passed, verify scopes here; otherwise handlers can check later.
+ * Middleware factory: introspect token and attach req.auth
  */
-async function requireAuth(requiredScope) {
+function requireAuth(requiredScope) {
   return async (req, res, next) => {
     try {
       const token = parseBearer(req);
@@ -146,7 +120,6 @@ async function requireAuth(requiredScope) {
           .json({ error: "insufficient_scope", required: requiredScope });
       }
 
-      // success – attach to request for handlers
       req.auth = data; // {sub, scope, aud, iat, exp, ...}
       next();
     } catch (err) {
@@ -157,7 +130,7 @@ async function requireAuth(requiredScope) {
 }
 
 /**
- * Optional separate scope guard if you want to compose requireAuth + requireScope
+ * Optional separate scope guard (if you ever compose middlewares)
  */
 function requireScope(scope) {
   return (req, res, next) => {
@@ -170,11 +143,11 @@ function requireScope(scope) {
 }
 
 // --- Tickets endpoints (auth + scope) ---
-app.get("/tickets", await requireAuth("tickets:read"), (req, res) => {
+app.get("/tickets", requireAuth("tickets:read"), (req, res) => {
   res.json({ tickets: listTickets() });
 });
 
-app.get("/tickets/:id", await requireAuth("tickets:read"), (req, res) => {
+app.get("/tickets/:id", requireAuth("tickets:read"), (req, res) => {
   const t = getTicket(req.params.id);
   if (!t) return res.status(404).json({ error: "not_found" });
   res.json(t);
@@ -183,7 +156,7 @@ app.get("/tickets/:id", await requireAuth("tickets:read"), (req, res) => {
 /**
  * Protected MCP-ish echo (needs echo:read)
  */
-app.get("/mcp/echo", await requireAuth("echo:read"), (req, res) => {
+app.get("/mcp/echo", requireAuth("echo:read"), (req, res) => {
   const q = req.query.q || "hello";
   res.json({
     ok: true,
