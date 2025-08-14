@@ -4,7 +4,7 @@ import morgan from "morgan";
 import cors from "cors";
 import crypto from "node:crypto";
 import fetch from "node-fetch";
-import 'dotenv/config';
+import "dotenv/config";
 
 import { signState, verifyState } from "./crypto.js";
 import { shouldAutoConsent } from "./consentHook.js";
@@ -14,14 +14,14 @@ app.use(cors());
 app.use(morgan("dev"));
 app.use(express.json());
 
-// In‑memory sessions (sid -> session data)
+// In-memory sessions (sid -> context only; no tokens here)
 const SESSION = new Map();
 
 function sid() { return crypto.randomBytes(16).toString("hex"); }
 function now() { return Math.floor(Date.now() / 1000); }
 
 const GW_BASE = process.env.GW_BASE || "http://localhost:9400";
-const RS_META = process.env.RS_META || "http://localhost:9091/.well-known/oauth-protected-resource";
+const DEFAULT_RS_META = process.env.RS_META || "http://localhost:9091/.well-known/oauth-protected-resource";
 
 // Minimal HTML helper
 function html(body) {
@@ -30,82 +30,126 @@ function html(body) {
   ${body}`;
 }
 
-// pick any ready session (Phase‑1 simplicity)
-function getReadySession() {
-  for (const s of SESSION.values()) {
-    if (s.ready && s.access_token) return s;
-  }
-  return null;
-}
-
 /**
  * POST /session/start
- *  - discover RS -> AS (from RS metadata)
- *  - create session, PKCE
- *  - build signed state bound to sid
- *  - consent hook: redirect either to AS authorize or our /consent
+ * Body:
+ * {
+ *   rs_base: "http://localhost:9091",
+ *   client_id: "demo-client",
+ *   redirect_uri: "http://localhost:9200/callback",
+ *   code_challenge: "<S256>",
+ *   scope: "echo:read",
+ *   toolId: "mcp.echo",
+ *   agentId: "agent-demo"
+ * }
+ *
+ * Returns: { sid, authorize_url }
  */
-app.post("/session/start", async (_req, res) => {
+app.post("/session/start", async (req, res) => {
   try {
-    const rs = await fetch(RS_META).then(r => {
+    const {
+      rs_base,
+      client_id,
+      redirect_uri,
+      code_challenge,
+      scope = "echo:read",
+      toolId = "mcp.echo",
+      agentId = "agent-demo",
+    } = req.body || {};
+
+    if (!client_id || !redirect_uri || !code_challenge) {
+      return res.status(400).json({
+        error: "invalid_request",
+        error_description: "client_id, redirect_uri, code_challenge required",
+      });
+    }
+
+    // 1) Discover RS -> AS
+    const rsMetaUrl = rs_base
+      ? `${rs_base}/.well-known/oauth-protected-resource`
+      : DEFAULT_RS_META;
+
+    const rs = await fetch(rsMetaUrl).then((r) => {
       if (!r.ok) throw new Error(`RS metadata fetch failed ${r.status}`);
       return r.json();
     });
 
     const asMetaUrl = rs.authorization_servers?.[0];
-    if (!asMetaUrl) return res.status(500).json({ error: "no_as" });
+    if (!asMetaUrl) return res.status(502).json({ error: "no_as_from_rs" });
 
-    const as = await fetch(asMetaUrl).then(r => {
+    const as = await fetch(asMetaUrl).then((r) => {
       if (!r.ok) throw new Error(`AS metadata fetch failed ${r.status}`);
       return r.json();
     });
 
-    // PKCE
-    const code_verifier = crypto.randomBytes(32).toString("base64url");
-    const code_challenge = crypto.createHash("sha256").update(code_verifier).digest("base64url");
-
-    // Session
-    const scope = "echo:read";
+    // 2) Policy evaluation (dummy auto-consent or explicit UI)
     const audience = rs.resource || "mcp-demo";
+    const approval = await shouldAutoConsent({
+      scope,
+      aud: audience,
+      toolId,
+      agentId,
+      rsMetaUrl,
+      asMetaUrl,
+    });
+    if (!approval.allow) {
+      // Require explicit consent via our gateway page
+      const s = sid();
+      const n = crypto.randomBytes(8).toString("hex");
+      const statePayload = { sid: s, iat: now(), aud: audience, scope, toolId, agentId, n };
+      const state = signState(statePayload);
+
+      SESSION.set(s, {
+        s,
+        n,
+        audience,
+        scope,
+        toolId,
+        agentId,
+        rs,
+        as,
+        client_id,
+        redirect_uri,
+        code_challenge,
+        state,
+      });
+
+      return res.json({ sid: s, authorize_url: `${GW_BASE}/consent?sid=${s}` });
+    }
+
+    // 3) Auto-approve path: mint state, hand back AS authorize URL directly
     const s = sid();
     const n = crypto.randomBytes(8).toString("hex");
-
-    // figure upstream RS base (preferred: metadata.gateway.upstream_resource)
-    const upstream =
-      rs?.gateway?.upstream_resource
-        || new URL(RS_META).origin; // fallback: same origin as metadata
-
-    const statePayload = { sid: s, iat: now(), aud: audience, scope, n };
+    const statePayload = { sid: s, iat: now(), aud: audience, scope, toolId, agentId, n };
     const state = signState(statePayload);
 
     SESSION.set(s, {
-      s, n, rs, as, scope, audience, upstream,
-      code_verifier, code_challenge, state,
-      ready: false,
-      // tokens will be filled after callback
+      s,
+      n,
+      audience,
+      scope,
+      toolId,
+      agentId,
+      rs,
+      as,
+      client_id,
+      redirect_uri,
+      code_challenge,
+      state,
     });
 
-    // Consent hook (V0)
-    const { allow } = await shouldAutoConsent({
-      scope, aud: audience, toolId: "mcp.echo", agentId: "agent-demo"
-    });
+    const u = new URL(as.authorization_endpoint);
+    u.searchParams.set("response_type", "code");
+    u.searchParams.set("client_id", client_id);
+    u.searchParams.set("redirect_uri", redirect_uri);
+    u.searchParams.set("scope", scope);
+    u.searchParams.set("state", state);
+    // Optional: resource indicator for audience binding
+    if (audience) u.searchParams.set("resource", audience);
+    u.searchParams.set("code_challenge", code_challenge);
+    u.searchParams.set("code_challenge_method", "S256");
 
-    let authorize_url;
-    if (allow) {
-      const u = new URL(as.authorization_endpoint);
-      u.searchParams.set("response_type", "code");
-      u.searchParams.set("client_id", "demo-client");
-      u.searchParams.set("redirect_uri", `${GW_BASE}/oauth/callback`);
-      u.searchParams.set("scope", scope);
-      u.searchParams.set("state", state);
-      u.searchParams.set("code_challenge", code_challenge);
-      u.searchParams.set("code_challenge_method", "S256");
-      authorize_url = u.toString();
-    } else {
-      authorize_url = `${GW_BASE}/consent?sid=${s}`;
-    }
-
-    res.json({ sid: s, authorize_url });
+    return res.json({ sid: s, authorize_url: u.toString() });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "start_failed" });
@@ -114,7 +158,7 @@ app.post("/session/start", async (_req, res) => {
 
 /**
  * GET /consent?sid=...
- *  - tiny page: user clicks Approve, then we jump to AS /authorize
+ * Very small page: on "Approve" it redirects to AS /authorize with the client's redirect_uri & code_challenge.
  */
 app.get("/consent", (req, res) => {
   const s = SESSION.get(req.query.sid);
@@ -122,119 +166,38 @@ app.get("/consent", (req, res) => {
 
   const u = new URL(s.as.authorization_endpoint);
   u.searchParams.set("response_type", "code");
-  u.searchParams.set("client_id", "demo-client");
-  u.searchParams.set("redirect_uri", `${GW_BASE}/oauth/callback`);
+  u.searchParams.set("client_id", s.client_id);
+  u.searchParams.set("redirect_uri", s.redirect_uri);
   u.searchParams.set("scope", s.scope);
   u.searchParams.set("state", s.state);
+  if (s.audience) u.searchParams.set("resource", s.audience);
   u.searchParams.set("code_challenge", s.code_challenge);
   u.searchParams.set("code_challenge_method", "S256");
 
-  res.send(html(`
-    <h2>Approve access?</h2>
-    <p>Tool: <b>${s.audience}</b> &nbsp; Scope: <code>${s.scope}</code></p>
-    <form action="${u.toString()}" method="get">
-      <button type="submit">Approve & continue</button>
-    </form>
-  `));
+  res.send(
+    html(`
+      <h2>Approve access?</h2>
+      <p>Tool: <b>${s.audience}</b> &nbsp; Scope: <code>${s.scope}</code></p>
+      <form action="${u.toString()}" method="get">
+        <button type="submit">Approve & continue</button>
+      </form>
+    `)
+  );
 });
 
 /**
- * OAuth redirect_uri
- *  - verify signed state
- *  - exchange code at AS
- *  - mark session ready
+ * POST /state/verify
+ * Body: { state }
+ * Returns: { ok:true, ...claims } or { ok:false, error }
  */
-app.get("/oauth/callback", async (req, res) => {
+app.post("/state/verify", (req, res) => {
   try {
-    const { code, state } = req.query;
+    const { state } = req.body || {};
     const v = verifyState(state);
-    if (!v.ok) return res.status(400).send(html(`<h2>Invalid state: ${v.err}</h2>`));
-
-    const { sid: s } = v.json;
-    const sess = SESSION.get(s);
-    if (!sess) return res.status(400).send(html("<h2>Unknown session</h2>"));
-
-    const body = new URLSearchParams({
-      grant_type: "authorization_code",
-      code: String(code),
-      redirect_uri: `${GW_BASE}/oauth/callback`,
-      client_id: "demo-client",
-      code_verifier: sess.code_verifier
-    });
-
-    const tok = await fetch(sess.as.token_endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body
-    });
-    if (!tok.ok) {
-      const t = await tok.text();
-      return res.status(500).send(html(`<h2>Token exchange failed</h2><pre>${t}</pre>`));
-    }
-    const j = await tok.json();
-
-    sess.access_token = j.access_token;
-    sess.refresh_token = j.refresh_token;
-    sess.expires_in = j.expires_in;
-    sess.obtained_at = Date.now();
-    sess.ready = true;
-
-    res.send(html("<h2>Done.</h2><p>You can close this tab.</p>"));
+    if (!v.ok) return res.status(400).json({ ok: false, error: v.err });
+    return res.json({ ok: true, ...v.json });
   } catch (e) {
-    console.error(e);
-    res.status(500).send(html("<h2>Callback error</h2>"));
-  }
-});
-
-/**
- * GET /session/status
- *  - simple readiness flag for Phase‑1 polling
- */
-app.get("/session/status", (_req, res) => {
-  const ready = !!getReadySession();
-  res.json({ ready });
-});
-
-/**
- * GET /mcp/echo
- *  - if no ready session: tell client to start auth
- *  - else forward to RS /mcp/echo with stored bearer
- */
-app.get("/mcp/echo", async (req, res) => {
-  const sess = getReadySession();
-  if (!sess) {
-    return res.status(401).json({ error: "login_required" });
-  }
-
-  try {
-    const url = new URL("/mcp/echo", sess.upstream);
-    for (const [k, v] of Object.entries(req.query)) {
-      url.searchParams.set(k, String(v));
-    }
-
-    const r = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${sess.access_token}` }
-    });
-
-    // If upstream rejects token, reset session so client re‑auths
-    if (r.status === 401 || r.status === 403) {
-      sess.ready = false;
-      sess.access_token = undefined;
-      sess.refresh_token = undefined;
-      return res.status(401).json({ error: "login_required" });
-    }
-
-    const text = await r.text(); // consume once
-    // try JSON, fall back to text
-    try {
-      const json = JSON.parse(text);
-      return res.status(r.status).json(json);
-    } catch {
-      res.status(r.status).type(r.headers.get("content-type") || "text/plain").send(text);
-    }
-  } catch (e) {
-    console.error("proxy /mcp/echo error", e);
-    res.status(502).json({ error: "bad_gateway" });
+    return res.status(500).json({ ok: false, error: "verify_failed" });
   }
 });
 
@@ -242,6 +205,6 @@ app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 const PORT = process.env.PORT || 9400;
 app.listen(PORT, () => {
-  console.log(`Gateway listening on :${PORT}`);
-  console.log(`RS metadata: ${RS_META}`);
+  console.log(`Gateway (TES) listening on :${PORT}`);
+  console.log(`Default RS metadata (fallback): ${DEFAULT_RS_META}`);
 });
