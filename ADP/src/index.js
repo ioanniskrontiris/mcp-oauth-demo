@@ -1,203 +1,280 @@
-// ADP/src/index.js
 import express from "express";
 import morgan from "morgan";
 import cors from "cors";
-import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
+import initSqlJs from "sql.js";
+import { importJWK, jwtVerify } from "jose";
 
 const app = express();
 app.use(cors());
 app.use(morgan("dev"));
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ limit: "512kb" }));
 
-/**
- * In-memory Delegation Store
- * Keyed by `${subject}|${agentId}|${toolId}`
- * Each record:
- *  {
- *    id,           // stable identifier
- *    subject,      // user
- *    agentId,      // agent instance / client
- *    toolId,       // MCP tool identifier
- *    scopes,       // array<string>
- *    issued_at,    // unix seconds
- *    not_after     // unix seconds (expiry)
- *  }
- */
-const store = new Map();
-const key = (subject, agentId, toolId) => `${subject}|${agentId}|${toolId}`;
-const nowSec = () => Math.floor(Date.now() / 1000);
+// ---------- DB bootstrap (sql.js; pure JS, no native builds) ----------
+const DATA_DIR = path.resolve(process.cwd(), "data");
+const DB_PATH  = path.join(DATA_DIR, "adp.sqlite");
 
-// --- Seed a default delegation so your current demo keeps working ---
-seed({
-  subject: "user-123",
-  agentId: "agent-demo",
-  toolId: "mcp.echo",
-  scopes: ["echo:read"],
-  // year 3000
-  not_after: 32503680000
-});
+let SQL; // sql.js module
+let db;  // Database instance
 
-function seed({ subject, agentId, toolId, scopes, not_after }) {
-  const id = `del-${crypto.randomBytes(8).toString("hex")}`;
-  const rec = {
-    id,
-    subject,
-    agentId,
-    toolId,
-    scopes: Array.from(new Set(scopes || [])).sort(),
-    issued_at: nowSec(),
-    not_after: Number(not_after) || (nowSec() + 3600) // default 1h if missing
-  };
-  store.set(key(subject, agentId, toolId), rec);
-  return rec;
+function nowSec() { return Math.floor(Date.now() / 1000); }
+
+async function ensureDir(p) {
+  try { await fs.mkdir(p, { recursive: true }); } catch {}
 }
 
-function getDelegation(subject, agentId, toolId) {
-  const rec = store.get(key(subject, agentId, toolId));
-  if (!rec) return null;
-  if (rec.not_after <= nowSec()) return null; // expired
-  return rec;
+async function saveDb() {
+  const data = db.export(); // Uint8Array
+  await ensureDir(DATA_DIR);
+  await fs.writeFile(DB_PATH, data);
 }
 
-// --------------------------
-// Delegations Management API
-// --------------------------
+async function openDb() {
+  SQL = await initSqlJs(); // loads WASM
+  let buf = null;
+  try { buf = await fs.readFile(DB_PATH); } catch {}
+  db = new SQL.Database(buf || undefined);
 
-/**
- * GET /delegations
- * Optional filters: ?subject=&agentId=&toolId=
- */
-app.get("/delegations", (req, res) => {
-  const { subject, agentId, toolId } = req.query || {};
-  const list = Array.from(store.values()).filter(d => {
-    if (subject && d.subject !== subject) return false;
-    if (agentId && d.agentId !== agentId) return false;
-    if (toolId && d.toolId !== toolId) return false;
-    return true;
-  });
-  res.json({ delegations: list });
-});
+  // Table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS delegations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      subject TEXT NOT NULL,
+      agentId TEXT NOT NULL,
+      toolId TEXT NOT NULL,
+      scopes TEXT NOT NULL,          -- JSON string of array
+      not_after INTEGER NOT NULL,    -- epoch seconds
+      issuer TEXT,                   -- who issued the cred
+      jws TEXT,                      -- compact JWS as received
+      inserted_at INTEGER NOT NULL
+    )
+  `);
 
-/**
- * POST /delegations
- * Body: { subject, agentId, toolId, scopes: string[], not_after?: number }
- * Upserts by (subject,agentId,toolId)
- */
-app.post("/delegations", (req, res) => {
-  const { subject, agentId, toolId, scopes, not_after } = req.body || {};
-  if (!subject || !agentId || !toolId) {
-    return res.status(400).json({ error: "invalid_request", error_description: "subject, agentId, toolId are required" });
-  }
-  if (!Array.isArray(scopes) || scopes.length === 0) {
-    return res.status(400).json({ error: "invalid_request", error_description: "scopes (array) is required" });
-  }
-  const existing = store.get(key(subject, agentId, toolId));
-  if (existing) {
-    existing.scopes = Array.from(new Set(scopes)).sort();
-    existing.not_after = Number(not_after) || existing.not_after || (nowSec() + 3600);
-    return res.status(200).json({ updated: existing });
-  }
-  const created = seed({ subject, agentId, toolId, scopes, not_after });
-  return res.status(201).json({ created });
-});
+  // Indexes (✅ keep inside openDb so db is initialized)
+  db.run(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_delegations_key
+      ON delegations(subject, agentId, toolId)
+  `);
+  db.run(`
+    CREATE INDEX IF NOT EXISTS ix_delegations_not_after
+      ON delegations(not_after)
+  `);
 
-/**
- * DELETE /delegations/:id
- * Deletes by record id (not by composite key).
- */
-app.delete("/delegations/:id", (req, res) => {
-  const { id } = req.params;
-  let removed = false;
-  for (const [k, v] of store.entries()) {
-    if (v.id === id) {
-      store.delete(k);
-      removed = true;
-      break;
+  await saveDb();
+}
+
+function selectOne(sql, params = []) {
+  const stmt = db.prepare(sql);
+  try {
+    stmt.bind(params);
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      stmt.free();
+      return row;
     }
+    stmt.free();
+    return null;
+  } catch (e) {
+    stmt.free();
+    throw e;
   }
-  if (!removed) return res.status(404).json({ error: "not_found" });
-  res.json({ ok: true });
+}
+
+function run(sql, params = []) {
+  const stmt = db.prepare(sql);
+  try {
+    stmt.bind(params);
+    stmt.step();
+    stmt.free();
+  } catch (e) {
+    stmt.free();
+    throw e;
+  }
+}
+
+// ---------- POST /delegations  (seed a signed credential) ----------
+// Body:
+// { "jws": "<compact JWS>", "public_jwk": { ... } }
+// Payload must include: { subject, agentId, toolId, scopes: string[], not_after?: number, exp?: number, iss? }
+app.post("/delegations", async (req, res) => {
+  try {
+    const { jws, public_jwk } = req.body || {};
+    if (!jws || !public_jwk) {
+      return res.status(400).json({ error: "invalid_request", detail: "jws and public_jwk required" });
+    }
+
+    const key = await importJWK(public_jwk);
+    const { payload } = await jwtVerify(jws, key, {
+      algorithms: ["EdDSA", "ES256", "RS256"],
+      clockTolerance: "5s"
+    });
+
+    const {
+      subject, agentId, toolId, scopes,
+      not_after: notAfterFromPayload,
+      iss, exp
+    } = payload || {};
+
+    if (typeof subject !== "string" || !subject ||
+        typeof agentId !== "string" || !agentId ||
+        typeof toolId !== "string"  || !toolId ||
+        !Array.isArray(scopes) || scopes.some(s => typeof s !== "string" || !s)) {
+      return res.status(400).json({ error: "invalid_credential_payload" });
+    }
+
+    const not_after = Number.isFinite(notAfterFromPayload) ? notAfterFromPayload
+                     : (Number.isFinite(exp) ? exp : undefined);
+
+    if (!Number.isFinite(not_after)) {
+      return res.status(400).json({ error: "missing_not_after" });
+    }
+    if (not_after <= nowSec()) {
+      return res.status(400).json({ error: "expired_credential" });
+    }
+
+    // Upsert for (subject, agentId, toolId)
+    const existing = selectOne(
+      `SELECT id FROM delegations WHERE subject=? AND agentId=? AND toolId=?`,
+      [subject, agentId, toolId]
+    );
+    if (existing) {
+      run(
+        `UPDATE delegations
+           SET scopes=?, not_after=?, issuer=?, jws=?, inserted_at=?
+         WHERE id=?`,
+        [JSON.stringify(scopes), not_after, iss || null, jws, nowSec(), existing.id]
+      );
+    } else {
+      run(
+        `INSERT INTO delegations (subject, agentId, toolId, scopes, not_after, issuer, jws, inserted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [subject, agentId, toolId, JSON.stringify(scopes), not_after, iss || null, jws, nowSec()]
+      );
+    }
+
+    await saveDb();
+    return res.status(201).json({ ok: true, subject, agentId, toolId, scopes, not_after });
+  } catch (e) {
+    console.error("POST /delegations error:", e);
+    return res.status(400).json({ error: "bad_delegation", detail: String(e?.message || e) });
+  }
 });
 
-// ---------------------------------
-// Policy Evaluation & Consent (MVP)
-// ---------------------------------
-
-/**
- * POST /evaluate
- * Input:  { subject, agentId, toolId, audience, requested_scopes: string[] }
- * Output: { allow: boolean, scopes: string[], obligations?: object }
- *
- * Logic:
- *  - If a non-expired delegation exists → allow and return intersection(requested, delegated)
- *    (fallback to delegated scopes if intersection empty).
- *  - If none exists → allow (for now) but only the requested scopes (you can tighten later).
- */
+// ---------- POST /evaluate  (DB-backed) ----------
 app.post("/evaluate", (req, res) => {
   const {
     subject = "user-123",
-    agentId = "agent-demo",
-    toolId  = "mcp.echo",
+    agentId,
+    toolId,
     audience,
     requested_scopes = []
   } = req.body || {};
 
-  const del = getDelegation(subject, agentId, toolId);
+  const reqScopes = Array.isArray(requested_scopes)
+    ? requested_scopes.filter(s => typeof s === "string" && s)
+    : [];
 
-  let allowedScopes = requested_scopes;
-  if (del) {
-    const delegated = new Set(del.scopes);
-    const inter = requested_scopes.filter(s => delegated.has(s));
-    allowedScopes = inter.length > 0 ? inter : del.scopes.slice();
-  } // else keep requested_scopes as-is (current permissive mode)
+  const row = selectOne(
+    `SELECT * FROM delegations
+       WHERE subject=? AND agentId=? AND toolId=? AND not_after > ?`,
+    [subject, agentId, toolId, nowSec()]
+  );
+
+  let allow = true;
+  let allowedScopes = reqScopes;
+
+  if (row) {
+    let delegatedArr = [];
+    try { delegatedArr = JSON.parse(row.scopes || "[]"); } catch {}
+    const delegated = new Set(
+      Array.isArray(delegatedArr) ? delegatedArr.filter(s => typeof s === "string" && s) : []
+    );
+    const intersection = reqScopes.filter(s => delegated.has(s));
+    allowedScopes = intersection.length ? intersection : Array.from(delegated);
+  }
 
   return res.json({
-    allow: true,
+    allow,
     scopes: allowedScopes,
-    obligations: {} // placeholder for future policy outputs
+    obligations: {},
+    as_hints: []
   });
 });
 
-/**
- * POST /consent
- * Input:  { subject, agentId, toolId, audience, scopes: string[], explicit?: boolean }
- * Output: { approved: boolean, record_id?: string, reason?: string }
- *
- * Logic:
- *  - If delegation exists and covers ALL scopes → auto-approve.
- *  - Else if explicit === true → approve and “record” it (return record_id).
- *  - Else → approved:false, reason:"explicit_required".
- */
+// ---------- POST /consent  ----------
 app.post("/consent", (req, res) => {
   const {
     subject = "user-123",
-    agentId = "agent-demo",
-    toolId  = "mcp.echo",
+    agentId,
+    toolId,
     audience,
     scopes = [],
     explicit = false
   } = req.body || {};
 
-  const del = getDelegation(subject, agentId, toolId);
-  if (del) {
-    const delegated = new Set(del.scopes);
-    const allCovered = scopes.every(s => delegated.has(s));
+  const reqScopes = Array.isArray(scopes)
+    ? scopes.filter(s => typeof s === "string" && s)
+    : [];
+
+  const row = selectOne(
+    `SELECT * FROM delegations
+       WHERE subject=? AND agentId=? AND toolId=? AND not_after > ?`,
+    [subject, agentId, toolId, nowSec()]
+  );
+
+  if (row) {
+    let delegatedArr = [];
+    try { delegatedArr = JSON.parse(row.scopes || "[]"); } catch {}
+    const delegated = new Set(
+      Array.isArray(delegatedArr) ? delegatedArr.filter(s => typeof s === "string" && s) : []
+    );
+    const allCovered = reqScopes.every(s => delegated.has(s));
     if (allCovered) {
-      return res.json({ approved: true, record_id: `auto-${Date.now()}` });
+      return res.json({ allow: true, record_id: `auto-${Date.now()}` });
     }
+    // else fall through to explicit branch
   }
 
   if (explicit) {
-    return res.json({ approved: true, record_id: `exp-${Date.now()}` });
+    return res.json({ allow: true, record_id: `exp-${Date.now()}` });
   }
 
-  return res.json({ approved: false, reason: "explicit_required" });
+  return res.json({ allow: false, reason: "explicit_required" });
+});
+
+// ---------- Dev helpers ----------
+app.get("/delegations", (_req, res) => {
+  const stmt = db.prepare(`SELECT id, subject, agentId, toolId, scopes, not_after, issuer, inserted_at
+                           FROM delegations ORDER BY inserted_at DESC`);
+  const rows = [];
+  try {
+    while (stmt.step()) rows.push(stmt.getAsObject());
+  } finally {
+    stmt.free();
+  }
+  res.json({ count: rows.length, rows });
+});
+
+app.delete("/delegations", (req, res) => {
+  const { subject, agentId, toolId } = req.body || {};
+  if (!subject || !agentId || !toolId) {
+    return res.status(400).json({ error: "invalid_request", detail: "subject, agentId, toolId required" });
+  }
+  run(`DELETE FROM delegations WHERE subject=? AND agentId=? AND toolId=?`, [subject, agentId, toolId]);
+  saveDb().then(() => res.json({ ok: true }));
 });
 
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
+// ---------- Boot ----------
 const PORT = process.env.ADP_PORT || 9500;
-app.listen(PORT, () => {
-  console.log(`ADP (Client Authorizer) listening on :${PORT}`);
+openDb().then(() => {
+  app.listen(PORT, () => {
+    console.log(`ADP (Client Authorizer) listening on :${PORT}`);
+    console.log(`DB: ${DB_PATH}`);
+  });
+}).catch(err => {
+  console.error("Failed to open DB:", err);
+  process.exit(1);
 });
