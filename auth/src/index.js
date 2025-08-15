@@ -25,14 +25,15 @@ const HMAC_SECRET = new TextEncoder().encode("dev-secret-please-change"); // HS2
 const DEFAULT_AUDIENCE = "mcp-demo"; // RS identifier used if no resource indicator was provided
 
 // In‑memory demo client registry (client_id -> { redirect_uris: [...] })
+// AS: src/index.js
 const CLIENTS = new Map([
   [
     "demo-client",
     {
       redirect_uris: [
-        "http://localhost:9200/callback", // AI Agent (direct)
-        "http://localhost:9300/callback", // Gateway (future)
-        "http://localhost:9400/oauth/callback", // Gateway Phase 1
+        "http://localhost:9200/callback",  // old direct client
+        "http://localhost:9300/callback",  // (if you used this before)
+        "http://localhost:9400/oauth/callback", // ✅ gateway callback
       ],
     },
   ],
@@ -61,7 +62,7 @@ app.get("/.well-known/oauth-authorization-server", (req, res) => {
     grant_types_supported: ["authorization_code"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: ["echo:read", "tickets:read"],
+    scopes_supported: ["echo:read", "tickets:read", "payments:charge"],
     // not standard, but handy to document where callbacks should be (demo)
     redirect_uris_supported: Array.from(
       new Set([...CLIENTS.values()].flatMap((c) => c.redirect_uris))
